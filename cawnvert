@@ -1,0 +1,101 @@
+#!/usr/bin/env python
+
+import sys, os, time, thread
+import glib, gobject
+import pygst
+pygst.require("0.10")
+import gst
+
+class PipelineBuilder:
+
+    def _decodebin_pad_added(self, decodebin, pad):
+        audio_pad = self.audioconvert.get_pad("sink")
+        pad.link(audio_pad)
+
+    def build(self, filename):
+        player = gst.Pipeline("player")
+        src = gst.element_factory_make("filesrc", "player")
+        src.set_property("location", filename)
+        
+        decodebin = gst.element_factory_make("decodebin", "decodebin")
+        decodebin.connect("pad-added", self._decodebin_pad_added)
+
+#        fakesink = gst.element_factory_make("fakesink", "fakesink")
+#        player.set_property("video-sink", fakesink)
+
+        self.audioconvert = gst.element_factory_make("audioconvert",
+                "audioconvert")
+
+        lame = gst.element_factory_make("lame", "lame")
+
+        sink = gst.element_factory_make("filesink", "filesink")
+        sink.set_property("location", "output.mp3")
+
+        player.add(src, decodebin, self.audioconvert, lame, sink)
+
+        gst.element_link_many(src, decodebin)
+        gst.element_link_many(self.audioconvert, lame, sink)
+        
+        return player
+
+class CLI_Main:
+    
+    def __init__(self):
+        self.player = None
+        self.duration = None
+        self.time_format = gst.Format(gst.FORMAT_TIME)
+
+    def connect_signals(self):
+        bus = self.player.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self.on_message)
+
+    def on_message(self, bus, message):
+        t = message.type
+        if t == gst.MESSAGE_EOS:
+            self.player.set_state(gst.STATE_NULL)
+            self.playmode = False
+        elif t == gst.MESSAGE_ERROR:
+            self.player.set_state(gst.STATE_NULL)
+            err, debug = message.parse_error()
+            print "Error: %s" % err, debug
+            self.playmode = False
+
+    def start(self):
+        try:
+            self.player = PipelineBuilder().build(sys.argv[1])
+        except Exception, e:
+            print e
+        self.connect_signals()
+
+        self.playmode = True
+        self.player.set_state(gst.STATE_PLAYING)
+        while self.playmode:
+            time.sleep(1)
+            self._show_progress()
+                   
+        time.sleep(1)
+        self._show_final_progress()
+        loop.quit()
+
+    def _show_final_progress(self):
+        print("\r100%")
+
+    def _show_progress(self):
+        try:
+            if not self.duration or self.duration < 0:
+                self.duration = self.player.query_duration(self.time_format,
+                        None)[0]
+
+            if self.duration:
+                position = self.player.query_position(self.time_format, None)[0]
+                sys.stdout.write("\r%d%%" % ((position * 100.0) / self.duration))
+                sys.stdout.flush()
+        except gst.QueryError:
+            pass
+ 
+mainclass = CLI_Main()
+thread.start_new_thread(mainclass.start, ())
+gobject.threads_init()
+loop = glib.MainLoop()
+loop.run()
